@@ -26,8 +26,7 @@ import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.Map.Entry;
 
 import javax.servlet.http.HttpServletRequest;
@@ -38,159 +37,168 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.RequestEntity;
 import org.springframework.http.RequestEntity.BodyBuilder;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * 
  * {@link DefaultBulkApiService} id the default implementation of
  * {@link BulkApiService}.
- *
  */
 public class DefaultBulkApiService implements BulkApiService {
 
-  private final ApplicationContext appCtx;
-  private final Environment env;
+    private final ApplicationContext appCtx;
+    private final Environment env;
 
-  private BulkApiValidator validator;
-  private URITransformer uriTransformer;
+    private BulkApiValidator validator;
+    private URITransformer uriTransformer;
 
-  /**
-   * Creates a {@link DefaultBulkApiService}.
-   * 
-   * @param appCtx
-   *          the Spring {@link ApplicationContext}
-   */
-  public DefaultBulkApiService(ApplicationContext appCtx) {
-    this.appCtx = appCtx;
-    env = appCtx.getEnvironment();
+    /**
+     * Creates a {@link DefaultBulkApiService}.
+     *
+     * @param appCtx the Spring {@link ApplicationContext}
+     */
+    public DefaultBulkApiService(ApplicationContext appCtx) {
+        this.appCtx = appCtx;
+        env = appCtx.getEnvironment();
 
-    String[] beanNames = appCtx.getBeanNamesForType(URITransformer.class);
-    if (beanNames.length > 0) {
-      uriTransformer = appCtx.getBean(URITransformer.class);
-    }
-  }
-
-  private BulkApiValidator validator() {
-    if (validator == null) validator = new BulkApiValidator(appCtx);
-    return validator;
-  }
-
-  @Override
-  public BulkResponse bulk(BulkRequest req, HttpServletRequest servReq) {
-    validateBulkRequest(req, servReq);
-
-    List<BulkResult> results = new ArrayList<>();
-    RestTemplate template = new RestTemplate();
-    for (BulkOperation op : req.getOperations()) {
-      ComputedURIResult uriResult = computeUri(servReq, op);
-
-      BodyBuilder bodyBuilder = RequestEntity.method(//
-          httpMethod(op.getMethod()), uriResult.getUri());
-
-      ResponseEntity<String> rawRes = template.exchange(
-          requestEntity(bodyBuilder, op, uriResult.hasRequestBody()),
-          String.class);
-
-      if (!op.isSilent()) results.add(buildResult(rawRes));
+        String[] beanNames = appCtx.getBeanNamesForType(URITransformer.class);
+        if (beanNames.length > 0) {
+            uriTransformer = appCtx.getBean(URITransformer.class);
+        }
     }
 
-    return new BulkResponse(results);
-  }
-
-  private RequestEntity<?> requestEntity(BodyBuilder bodyBuilder,
-      BulkOperation op, boolean requestBody) {
-    for (Entry<String, String> header : op.getHeaders().entrySet()) {
-      bodyBuilder.header(header.getKey(), header.getValue());
+    private BulkApiValidator validator() {
+        if (validator == null) validator = new BulkApiValidator(appCtx);
+        return validator;
     }
 
-    Object params;
-    if (requestBody) {
-      params = op.getParams();
-    } else {
-      LinkedMultiValueMap<String, Object> lmvm = new LinkedMultiValueMap<>();
-      lmvm.setAll(op.getParams());
-      params = lmvm;
+    @Override
+    public BulkResponse bulk(BulkRequest req, HttpServletRequest servReq) {
+        validateBulkRequest(req, servReq);
+
+        List<BulkResult> results = new ArrayList<>();
+        RestTemplate template = new RestTemplate();
+        for (BulkOperation op : req.getOperations()) {
+            Collection<String> headers = Collections.list(servReq.getHeaderNames());
+            if (!CollectionUtils.isEmpty(headers)) {
+                if (op.getHeaders() == null) {
+                    op.setHeaders(new HashMap<>());
+                }
+                for (String header : headers) {
+                    op.getHeaders().put(header, servReq.getHeader(header));
+                }
+            }
+            ComputedURIResult uriResult = computeUri(servReq, op);
+
+            BodyBuilder bodyBuilder = RequestEntity.method(//
+                    httpMethod(op.getMethod()), uriResult.getUri());
+
+            ResponseEntity<String> rawRes = template.exchange(
+                    requestEntity(bodyBuilder, op, uriResult.hasRequestBody()),
+                    String.class);
+
+            if (!op.isSilent()) {
+                results.add(buildResult(rawRes));
+            }
+        }
+
+        return new BulkResponse(results);
     }
 
-    return bodyBuilder.body(params);
-  }
+    private RequestEntity<?> requestEntity(BodyBuilder bodyBuilder,
+                                           BulkOperation op, boolean requestBody) {
+        for (Entry<String, String> header : op.getHeaders().entrySet()) {
+            bodyBuilder.header(header.getKey(), header.getValue());
+        }
 
-  private ComputedURIResult computeUri(HttpServletRequest servReq,
-      BulkOperation op) {
-    String rawUrl = servReq.getRequestURL().toString();
-    String rawUri = servReq.getRequestURI().toString();
+        Object params;
+        if (requestBody) {
+            params = op.getParams();
+        } else {
+            LinkedMultiValueMap<String, Object> lmvm = new LinkedMultiValueMap<>();
+            lmvm.setAll(op.getParams());
+            params = lmvm;
+        }
 
-    if (op.getUrl() == null || isBulkPath(op.getUrl())) {
-      throw new BulkApiException(UNPROCESSABLE_ENTITY,
-          "Invalid URL(" + rawUri + ") exists in this bulk request");
+        return bodyBuilder.body(params);
     }
 
-    String bulkPath =
-        urlify(env.getProperty(BULK_API_PATH_KEY, BULK_API_PATH_DEFAULT));
-    URI uri;
-    try {
-      String servletPath = rawUrl.substring(0, rawUrl.lastIndexOf(bulkPath));
-      uri = new URI(servletPath + urlify(op.getUrl()));
-    } catch (URISyntaxException e) {
-      throw new BulkApiException(UNPROCESSABLE_ENTITY, "Invalid URL("
-          + urlify(op.getUrl()) + ") exists in this bulk request");
+    private ComputedURIResult computeUri(HttpServletRequest servReq,
+                                         BulkOperation op) {
+        String rawUrl = servReq.getRequestURL().toString();
+        String rawUri = servReq.getRequestURI().toString();
+
+        if (op.getUrl() == null || isBulkPath(op.getUrl())) {
+            throw new BulkApiException(UNPROCESSABLE_ENTITY,
+                    "Invalid URL(" + rawUri + ") exists in this bulk request");
+        }
+
+        String bulkPath =
+                urlify(env.getProperty(BULK_API_PATH_KEY, BULK_API_PATH_DEFAULT));
+        URI uri;
+        try {
+            String servletPath = rawUrl.substring(0, rawUrl.lastIndexOf(bulkPath));
+            uri = new URI(servletPath + urlify(op.getUrl()));
+        } catch (URISyntaxException e) {
+            throw new BulkApiException(UNPROCESSABLE_ENTITY, "Invalid URL("
+                    + urlify(op.getUrl()) + ") exists in this bulk request");
+        }
+
+        PathValidationResult pvr = validator().validatePath(urlify(op.getUrl()),
+                httpMethod(op.getMethod()));
+        if (!pvr.isValid()) {
+            throw new BulkApiException(UNPROCESSABLE_ENTITY, "Invalid URL("
+                    + urlify(op.getUrl()) + ") exists in this bulk request");
+        }
+
+        if (uriTransformer != null) uri = uriTransformer.transform(uri);
+        return new ComputedURIResult(uri, pvr.hasRequestBody());
     }
 
-    PathValidationResult pvr = validator().validatePath(urlify(op.getUrl()),
-        httpMethod(op.getMethod()));
-    if (!pvr.isValid()) {
-      throw new BulkApiException(UNPROCESSABLE_ENTITY, "Invalid URL("
-          + urlify(op.getUrl()) + ") exists in this bulk request");
+    private boolean isBulkPath(String url) {
+        String bulkPath =
+                urlify(env.getProperty(BULK_API_PATH_KEY, BULK_API_PATH_DEFAULT));
+        url = urlify(url);
+
+        return url.equals(bulkPath) || url.startsWith(bulkPath + "/");
     }
 
-    if (uriTransformer != null) uri = uriTransformer.transform(uri);
-    return new ComputedURIResult(uri, pvr.hasRequestBody());
-  }
-
-  private boolean isBulkPath(String url) {
-    String bulkPath =
-        urlify(env.getProperty(BULK_API_PATH_KEY, BULK_API_PATH_DEFAULT));
-    url = urlify(url);
-
-    return url.equals(bulkPath) || url.startsWith(bulkPath + "/");
-  }
-
-  private String urlify(String url) {
-    url = url.trim();
-    return url.startsWith("/") ? url : "/" + url;
-  }
-
-  private BulkResult buildResult(ResponseEntity<String> rawRes) {
-    BulkResult res = new BulkResult();
-    res.setStatus(rawRes.getStatusCodeValue());
-    res.setHeaders(rawRes.getHeaders().toSingleValueMap());
-    res.setBody(rawRes.getBody());
-
-    return res;
-  }
-
-  private void validateBulkRequest(BulkRequest req,
-      HttpServletRequest servReq) {
-    int max =
-        env.getProperty(BULK_API_LIMIT_KEY, int.class, BULK_API_LIMIT_DEFAULT);
-    if (req.getOperations().size() > max) {
-      throw new BulkApiException(PAYLOAD_TOO_LARGE,
-          "Bulk operations exceed the limitation(" + max + ")");
+    private String urlify(String url) {
+        url = url.trim();
+        return url.startsWith("/") ? url : "/" + url;
     }
 
-    // Check if any invalid URL exists
-    for (BulkOperation op : req.getOperations()) {
-      computeUri(servReq, op);
-    }
-  }
+    private BulkResult buildResult(ResponseEntity<String> rawRes) {
+        BulkResult res = new BulkResult();
+        res.setStatus(rawRes.getStatusCodeValue());
+        res.setHeaders(rawRes.getHeaders().toSingleValueMap());
+        res.setBody(rawRes.getBody());
 
-  private static HttpMethod httpMethod(String method) {
-    try {
-      return HttpMethod.valueOf(method.toUpperCase());
-    } catch (Exception e) {
-      return HttpMethod.GET;
+        return res;
     }
-  }
+
+    private void validateBulkRequest(BulkRequest req,
+                                     HttpServletRequest servReq) {
+        int max =
+                env.getProperty(BULK_API_LIMIT_KEY, int.class, BULK_API_LIMIT_DEFAULT);
+        if (req.getOperations().size() > max) {
+            throw new BulkApiException(PAYLOAD_TOO_LARGE,
+                    "Bulk operations exceed the limitation(" + max + ")");
+        }
+
+        // Check if any invalid URL exists
+        for (BulkOperation op : req.getOperations()) {
+            computeUri(servReq, op);
+        }
+    }
+
+    private static HttpMethod httpMethod(String method) {
+        try {
+            return HttpMethod.valueOf(method.toUpperCase());
+        } catch (Exception e) {
+            return HttpMethod.GET;
+        }
+    }
 
 }

@@ -27,9 +27,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMethod;
 
-import com.github.wnameless.spring.routing.RoutingPath;
-import com.github.wnameless.spring.routing.RoutingPathResolver;
-
 import net.sf.rubycollect4j.Ruby;
 
 /**
@@ -48,7 +45,7 @@ public class BulkApiValidator {
     String[] basePackageNames = bulkableBeans.values().stream()
         .map(o -> o.getClass().getPackage().getName()).toArray(String[]::new);
 
-    pathRes = new RoutingPathResolver(appCtx, basePackageNames);
+    pathRes = new com.github.wnameless.spring.bulkapi.RoutingPathResolver(appCtx, basePackageNames);
   }
 
   /**
@@ -61,7 +58,7 @@ public class BulkApiValidator {
    * @return true if request path and method is bulkable, false otherwise
    */
   public PathValidationResult validatePath(String path, HttpMethod method) {
-    RoutingPath rp = pathRes.findByRequestPathAndMethod(path,
+    com.github.wnameless.spring.bulkapi.RoutingPath rp = pathRes.findByRequestPathAndMethod(path,
         RequestMethod.valueOf(method.toString()));
 
     if (rp == null) return new PathValidationResult(false, false);
@@ -75,7 +72,7 @@ public class BulkApiValidator {
     return new PathValidationResult(false, false);
   }
 
-  private boolean hasRequestBody(RoutingPath rp) {
+  private boolean hasRequestBody(com.github.wnameless.spring.bulkapi.RoutingPath rp) {
     for (List<Annotation> annos : rp.getParameterAnnotations()) {
       if (Ruby.Array.of(annos).map(Annotation::annotationType)
           .contains(RequestBody.class))
@@ -93,7 +90,7 @@ public class BulkApiValidator {
     return ((Bulkable) bulkable).autoApply();
   }
 
-  private Annotation findBulkableAnno(RoutingPath rp) {
+  private Annotation findBulkableAnno(com.github.wnameless.spring.bulkapi.RoutingPath rp) {
     return rp.getClassAnnotations().stream()
         .filter(item -> item.annotationType().equals(Bulkable.class))
         .findFirst().orElse(null);
